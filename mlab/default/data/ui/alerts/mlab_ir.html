@@ -1,0 +1,22 @@
+<form class="form-horizontal form-complex">
+    <div class="control-group">
+        <label class="control-label" for="mlab_ir_base_url">ir.mlab.sh URL</label>
+        <div class="controls">
+            <input type="text" name="action.mlab_ir.param.base_url" id="mlab_ir_base_url" placeholder="https://ir.example.com" />
+            <span class="help-block">App token: storage/passwords, realm <code>mlab</code>, name <code>ir_token</code>.</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label" for="mlab_ir_severity">Severity</label>
+        <div class="controls">
+            <select name="action.mlab_ir.param.severity" id="mlab_ir_severity">
+                <option value="info">info</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="critical">critical</option>
+            </select>
+            <span class="help-block">Used when a result has no severity or urgency field.</span>
+        </div>
+    </div>
+</form>

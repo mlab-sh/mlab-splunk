@@ -1,0 +1,95 @@
+# Dev stack: Splunk Enterprise with this repo's app mounted live + ir.mlab.sh. Start it with dev/setup.sh.
+
+x-ir-env: &ir-env
+  CH_HOST: ir-clickhouse
+  CH_USERNAME: default
+  CH_PASSWORD: changeme
+  INTERNAL_SECRET: ${INTERNAL_SECRET:?run dev/setup.sh}
+  APP_CALLBACK_URL: http://ir-app:8080
+
+services:
+  splunk:
+    image: splunk/splunk:${SPLUNK_VERSION:-10.4.3}
+    platform: linux/amd64   # only amd64 is published; runs under emulation on Apple silicon
+    hostname: splunk
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # web
+      - "8089:8089"   # management API
+      - "8088:8088"   # HEC
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: changeme123
+      SPLUNK_HEC_TOKEN: 6d6c6162-0000-4000-8000-000000000001
+    volumes:
+      - splunk_etc:/opt/splunk/etc
+      - splunk_var:/opt/splunk/var
+      # the code under test, live from the repo
+      - ./mlab:/opt/splunk/etc/apps/mlab
+
+  ir-app:
+    image: ghcr.io/mlab-sh/ir.mlab.sh:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *ir-env
+      LICENSE_KEY: ${MLAB_IR_LI:?put the ir.mlab.sh licence in .env as MLAB_IR_LI}
+      DB_HOST: ir-mysql
+      DB_PORT: 3306
+      DB_USERNAME: mlab_web
+      DB_PASSWORD: changeme
+      EXECUTOR_URL: http://ir-executor:8090
+      COOKIE_SECURE: "false"
+      DEV: "false"
+    depends_on:
+      ir-mysql: { condition: service_healthy }
+      ir-clickhouse: { condition: service_healthy }
+
+  ir-executor:
+    image: ghcr.io/mlab-sh/ir.mlab.sh-executor:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      <<: *ir-env
+      EXECUTOR_PORT: 8090
+    depends_on:
+      ir-clickhouse: { condition: service_healthy }
+
+  ir-mysql:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=changeme_root
+      - MYSQL_DATABASE=mlabir
+      - MYSQL_USER=mlab_web
+      - MYSQL_PASSWORD=changeme
+    volumes:
+      - ir_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 20
+
+  ir-clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    restart: unless-stopped
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
+      - CLICKHOUSE_DB=mlabir
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - ir_clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--password", "changeme", "--query", "SELECT 1"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  splunk_etc:
+  splunk_var:
+  ir_mysql:
+  ir_clickhouse:

@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+
+# written by Splunk into the bind-mounted app (dev stack), never packaged
+mlab/local/
+mlab/metadata/local.meta
+
+# dev stack, build
+dev/.generated/
+dist/
