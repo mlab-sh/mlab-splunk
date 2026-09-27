@@ -65,8 +65,13 @@ Users running `| mlab` without the `list_storage_passwords` capability get anony
 ## Test
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests   # unit tests, no network
+tests/splunk.sh                          # the app inside a running Splunk container (dev stack by default)
+tests/appinspect.sh                      # Splunkbase AppInspect (pip install splunk-appinspect)
+dev/package.sh                           # builds dist/mlab-<version>.tgz
 ```
+
+CI runs all three: unit tests, AppInspect, and `tests/splunk.sh` against Splunk 9.4.4 and 10.4.3.
 
 ## Dev stack
 

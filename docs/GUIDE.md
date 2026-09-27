@@ -342,7 +342,8 @@ curl -k -u admin https://SH:8089/servicesNS/nobody/mlab/storage/passwords -d rea
 | "API key not readable" | The user lacks `list_storage_passwords`: anonymous lookups. Grant the capability, or run as the scheduled search's owner. |
 | Silent scheduled alert | `index=_internal sourcetype=scheduler savedsearch_name="mlab - *"`: `result_count=0` → the macro finds nothing; `alert_actions=""` → action not enabled. |
 | `mlab_ir` failing | `index=_internal component=sendmodalert action=mlab_ir`: `base_url is not set`, `no ir.mlab.sh app token`, HTTP error from ir. |
-| Invalid conf | `splunk btool check --app=mlab` (empty = OK). In the dev stack: `docker compose exec -u splunk splunk /opt/splunk/bin/splunk btool check --app=mlab`. |
+| `Invalid key … python.required` in btool (Splunk 9.x) | Expected: that setting is for Splunk 10.2+ (Python 3.13); 9.x ignores it and runs the app on Python 3.9. |
+| Invalid conf | `splunk btool check --app=mlab` (empty = OK, apart from the line above on 9.x). In the dev stack: `docker compose exec -u splunk splunk /opt/splunk/bin/splunk btool check --app=mlab`. |
 | Start from an empty cache | Delete `$SPLUNK_HOME/var/run/splunk/mlab-cache.db`. |
 | Details of one `| mlab` run | Job → Inspect Job → search.log. |
 
@@ -364,8 +365,12 @@ mlab/                        the Splunk app (this is the folder you install)
   README/*.spec              declares the action's settings
   lib/splunklib/             Splunk SDK for Python 2.1.1 (Apache 2.0), vendored
 tests/                       unit tests (local fake HTTP server, no network)
+tests/splunk.sh              the app inside a running Splunk container (used by CI)
+tests/appinspect.sh          Splunkbase AppInspect gate (used by CI)
 dev/setup.sh, dev/e2e.sh     dev stack and end-to-end checks
+dev/package.sh               builds dist/mlab-<version>.tgz for Splunkbase
+.github/workflows/ci.yml     unit, appinspect, splunk 9.4.4 + 10.4.3
 docker-compose.yml           Splunk + ir.mlab.sh
 ```
 
-Git ignores `mlab/local/` and `mlab/metadata/local.meta` (written by Splunk in the dev stack, including the encrypted secrets), `dev/.generated/` and `.env`.
+Git ignores `mlab/local/` and `mlab/metadata/local.meta` (written by Splunk in the dev stack, including the encrypted secrets), `dev/.generated/`, `dist/` and `.env`.

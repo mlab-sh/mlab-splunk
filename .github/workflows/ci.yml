@@ -1,0 +1,91 @@
+name: CI
+
+# Unit tests, Splunkbase AppInspect, then the app inside real Splunk 9.4 and 10.4 containers
+# (btool, unit tests on Splunk's own Pythons, | mlab, mlab_ir against a fake ir.mlab.sh).
+# No network calls to mlab.sh, no credentials. The full-stack e2e (dev/e2e.sh) needs an
+# ir.mlab.sh licence, so it stays a local check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Talks only to local fake servers: no network, no credentials.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Syntax (Python, shell)
+        run: |
+          python -m py_compile mlab/bin/*.py
+          for f in dev/*.sh tests/*.sh; do bash -n "$f"; done
+
+  appinspect:
+    name: appinspect (Splunkbase precert)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install splunk-appinspect
+        run: |
+          sudo apt-get -qq install -y libmagic1
+          pip install -q splunk-appinspect
+
+      - name: AppInspect
+        run: tests/appinspect.sh
+
+      - name: Package and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlab-package
+          path: dist/
+
+  splunk:
+    name: splunk ${{ matrix.splunk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        splunk: ["9.4.4", "10.4.3"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Splunk (another uid) writes local/ into the mounted app, e.g. storage/passwords.
+      - name: Start Splunk with the app
+        run: |
+          chmod -R a+rwX mlab
+          docker run -d --name splunk -p 8089:8089 \
+            -e SPLUNK_START_ARGS=--accept-license \
+            -e SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com \
+            -e SPLUNK_PASSWORD=changeme123 \
+            -v "$PWD/mlab:/opt/splunk/etc/apps/mlab" \
+            splunk/splunk:${{ matrix.splunk }}
+          timeout 600 sh -c 'until [ "$(curl -sk -u admin:changeme123 -o /dev/null -w "%{http_code}" https://localhost:8089/services/server/info)" = 200 ]; do sleep 5; done'
+
+      - name: App inside Splunk
+        env:
+          CONTAINER: splunk
+        run: tests/splunk.sh
+
+      - name: Splunk logs on failure
+        if: failure()
+        run: docker exec -u splunk splunk tail -50 /opt/splunk/var/log/splunk/splunkd.log
