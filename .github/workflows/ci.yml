@@ -19,9 +19,9 @@ jobs:
     name: unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -38,9 +38,9 @@ jobs:
     name: appinspect (Splunkbase precert)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -54,7 +54,7 @@ jobs:
 
       - name: Package and report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlab-package
           path: dist/
@@ -67,7 +67,7 @@ jobs:
       matrix:
         splunk: ["9.4.4", "10.4.3"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Splunk (another uid) writes local/ into the mounted app, e.g. storage/passwords.
       - name: Start Splunk with the app
