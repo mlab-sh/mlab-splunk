@@ -1,6 +1,6 @@
 # mlab-splunk
 
-Splunk app (`mlab/`) that enriches events with [mlab.sh](https://mlab.sh) (file hashes, URLs, CVEs, public IPs) and sends alerts to ir.mlab.sh.
+Splunk app (`mlab/`) that enriches events with [mlab.sh](https://mlab.sh) (file hashes, URLs, CVEs, public IPs, domains, email addresses, indicators in raw text) and sends alerts to ir.mlab.sh.
 Splunk Enterprise 9.4+ / 10.x; works with Enterprise Security (the alert action is an adaptive response).
 
 Full guide, with Splunk basics, search examples and troubleshooting: [docs/GUIDE.md](docs/GUIDE.md).
@@ -17,9 +17,16 @@ Full guide, with Splunk basics, search examples and troubleshooting: [docs/GUIDE
 | `url` | `url` | `mlab_host`, `mlab_findings`, `mlab_severities` | none |
 | `cve` | `cve` | `mlab_cvss_score`, `mlab_epss_score`, `mlab_in_kev`, `mlab_kev_date_added`, … (vuln.mlab.sh) | none |
 | `ip` | `src` | `mlab_country_code`, `mlab_as`, `mlab_tor`, `mlab_proxy`, … (public IPs only) | ip |
+| `domain` | `query` | `mlab_status`, `mlab_scan_date`, `mlab_score`, `mlab_grade`, `mlab_findings`, `mlab_severities` from the last mlab.sh scan report (v2). Never launches a scan: schedule the domains you watch on mlab.sh (Watchdog). A domain never scanned gets `mlab_status=not_scanned`. | none |
+| `email` | `src_user` | `mlab_mailbox_type`, `mlab_is_disposable`, `mlab_is_free_provider`, `mlab_is_role`, `mlab_score`, `mlab_band`, `mlab_spoofability`, `mlab_domain_age_days`, `mlab_findings` | none |
+| `ioc` | `_raw` | `mlab_ioc_total`, `mlab_ioc_types`, `mlab_iocs` (multivalue `type:value`, `mvexpand` it), `mlab_truncated` (`POST /scan/ioc`, text up to 1 MB) | none |
 
 Every enriched result also gets `mlab_type` and `mlab_value`. Multivalue fields are skipped: `mvexpand` them first.
 The command runs on the search head only, caches results 24h in `$SPLUNK_HOME/var/run/splunk/mlab-cache.db`, and pauses a kind for an hour when it hits its quota (a warning shows in the search).
+
+With an API key, mlab.sh sends `X-RateLimit-Limit` / `X-RateLimit-Remaining` on the calls that spend quota: the command warns once when less than 10% is left, and parks the kind as soon as `Remaining` reaches 0, before the next call would get a 429. A spent quota answered with a 429 (or the 400 "limit reached" of older instances) parks it the same way.
+
+A key mlab.sh refuses (401: unknown, revoked or **expired**, keys expire after 90 days by default) shows one warning and stops the mlab.sh lookups for the rest of that search. Nothing is cached, so the next search works as soon as a new key is stored.
 
 ## Alerts
 
@@ -79,7 +86,7 @@ Splunk 10.4.3 (app mounted live) + ir.mlab.sh. Needs Docker with ~6 GB RAM and `
 
 ```sh
 dev/setup.sh   # everything up, ir.mlab.sh app token and mlab.sh key stored in Splunk
-dev/e2e.sh     # unit tests, | mlab on each kind, EICAR over HEC -> saved search -> ir.mlab.sh, dedup, KEV CVE
+dev/e2e.sh     # unit tests, | mlab on each kind (hash, cve, url, ip, domain, email, ioc), EICAR over HEC -> saved search -> ir.mlab.sh, dedup, KEV CVE
 ```
 
 | | URL | Login |

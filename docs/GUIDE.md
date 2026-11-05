@@ -89,7 +89,7 @@ docker compose down -v    # also deletes Splunk and ir.mlab.sh data
 ## 3. The `| mlab` command
 
 ```
-| mlab type=<hash|url|ip|cve> [field=<field>]
+| mlab type=<hash|url|ip|cve|domain|email|ioc> [field=<field>]
 ```
 
 | `type` | Default field | Adds | mlab.sh quota |
@@ -98,6 +98,9 @@ docker compose down -v    # also deletes Splunk and ir.mlab.sh data
 | `url` | `url` | `mlab_host`, `mlab_findings` (multivalue), `mlab_severities` (multivalue) | none |
 | `cve` | `cve` | `mlab_cvss_score`, `mlab_cvss_severity`, `mlab_epss_score`, `mlab_epss_percentile`, `mlab_in_kev`, `mlab_kev_date_added`, `mlab_in_eu_kev`, `mlab_risk_score` | none |
 | `ip` | `src` | `mlab_country_code`, `mlab_as`, `mlab_org`, `mlab_proxy`, `mlab_hosting`, `mlab_tor` | yes |
+| `domain` | `query` | `mlab_status` (`completed`, `partial`, `failed`, `in_progress`, `not_scanned`), `mlab_scan_date`, `mlab_score`, `mlab_grade`, `mlab_findings` (multivalue), `mlab_severities` (multivalue) | none |
+| `email` | `src_user` | `mlab_mailbox_type`, `mlab_is_disposable`, `mlab_is_free_provider`, `mlab_is_role`, `mlab_score`, `mlab_band`, `mlab_spoofability`, `mlab_domain_age_days`, `mlab_findings`, `mlab_severities` | none |
+| `ioc` | `_raw` | `mlab_ioc_total`, `mlab_ioc_types` (multivalue), `mlab_iocs` (multivalue `type:value`), `mlab_truncated` | none |
 
 Every enriched result also gets `mlab_type` and `mlab_value` (the value sent; hashes lower-cased).
 
@@ -108,7 +111,9 @@ Rules of thumb:
 - **Private IPs are never sent** (RFC 1918, loopback, CGNAT, link-local…): their `mlab_*` fields stay empty.
 - **Multivalue fields are skipped**: `mvexpand` them first.
 - **24h cache** on the search head (`$SPLUNK_HOME/var/run/splunk/mlab-cache.db`), shared by all searches.
-- **Quota reached**: that type is paused for an hour, the search shows a warning and the fields stay empty. Other types keep working.
+- **Quota reached**: that type is paused for an hour, the search shows a warning and the fields stay empty. Other types keep working. With an API key the command reads `X-RateLimit-Remaining` and parks the type as soon as it reaches 0, instead of waiting for the 429; it also warns once when less than 10% is left.
+- **Refused key** (401): the key is unknown, revoked or expired (keys expire after 90 days by default). One warning, then no mlab.sh lookup for the rest of the search; store a new key and the next search works.
+- **`type=domain` reads, it never scans**: it returns the last mlab.sh scan report (v2) of the domain. Schedule the domains you care about on mlab.sh (Watchdog, daily for lookalikes) and let Splunk read what they found. Not-scanned and still-scanning domains are asked again after an hour.
 - **API key**: read from `storage/passwords` with the rights of the user running the search. Without the `list_storage_passwords` capability the search still works, anonymously (with a warning).
 
 ## 4. Search examples
@@ -214,6 +219,39 @@ index=proxy url=*
 ```
 
 mlab.sh URL findings are **heuristics** (executable in the path, shortener, plaintext HTTP…), not reputation: use them to triage, not as a verdict.
+
+### Domains
+
+```
+index=dns query=*
+| stats count values(src) as src by query
+| mlab type=domain
+| search mlab_grade=F OR mlab_severities=critical
+```
+
+Only domains mlab.sh has scanned come back with a grade; the rest read `mlab_status=not_scanned`.
+
+### Email senders
+
+```
+index=mail src_user=*
+| stats count values(recipient) as recipient by src_user
+| mlab type=email
+| search mlab_is_disposable=true OR mlab_band=critical OR mlab_spoofability="Trivially spoofable"
+```
+
+### Indicators in raw events
+
+```
+index=edr sourcetype=powershell
+| head 200
+| mlab type=ioc
+| where mlab_ioc_total > 0
+| mvexpand mlab_iocs
+| rex field=mlab_iocs "^(?<ioc_type>[^:]+):(?<ioc_value>.+)$"
+```
+
+Each distinct text is one `POST /scan/ioc` (cached 24h): aggregate or `head` first.
 
 ### Keeping results
 
@@ -339,6 +377,8 @@ curl -k -u admin https://SH:8089/servicesNS/nobody/mlab/storage/passwords -d rea
 | `Unknown search command 'mlab'` | App missing or Splunk not restarted: `splunk btool commands list mlab --debug`. |
 | Empty `mlab_*` fields | The search messages (yellow banner): quota, network error, unreadable key. Private IP or multivalue field → expected. Is the right field read (`field=`)? |
 | "quota reached" | Wait (one-hour pause) or set an API key. Check: `curl -H "Authorization: token $KEY" https://mlab.sh/api/v1/limit/ip`. |
+| "mlab.sh refused the API key (401)" | The key is unknown, revoked or expired (90 days by default). Create a new one in mlab.sh (Organization settings → API keys) and store it again (`storage/passwords`, `name=api_key`). |
+| "quota low: N of M left" | Informational: the type will be parked when it reaches 0. Narrow the search or raise the plan. |
 | "API key not readable" | The user lacks `list_storage_passwords`: anonymous lookups. Grant the capability, or run as the scheduled search's owner. |
 | Silent scheduled alert | `index=_internal sourcetype=scheduler savedsearch_name="mlab - *"`: `result_count=0` → the macro finds nothing; `alert_actions=""` → action not enabled. |
 | `mlab_ir` failing | `index=_internal component=sendmodalert action=mlab_ir`: `base_url is not set`, `no ir.mlab.sh app token`, HTTP error from ir. |

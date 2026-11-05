@@ -111,6 +111,104 @@ class Enrich(unittest.TestCase):
             'mlab_kev_date_added': '2021-12-10', 'mlab_in_eu_kev': 'false', 'mlab_risk_score': 99.9})
         self.assertIsNone(self.api.requests[0]['headers'].get('Authorization'))  # public API, key not leaked
 
+    def test_quota_429_parks_the_kind(self):
+        self.api.routes['/scan/hash'] = (429, {'error': 'Daily hash lookup quota reached.'}, {'Retry-After': '3600'})
+        self.go([{'file_hash': SHA}, {'file_hash': 'b' * 64}])
+        self.assertEqual(len(self.api.requests), 1)
+        self.assertIn('quota reached', self.warnings[0])
+
+    def test_rate_limit_headers_park_before_the_429(self):
+        last = {'X-RateLimit-Limit': '100', 'X-RateLimit-Remaining': '0', 'X-RateLimit-Resource': 'hash',
+                'X-RateLimit-Window': '86400'}
+        self.api.routes['/scan/hash'] = (200, HASH_OK, last)
+        out = self.go([{'file_hash': SHA}, {'file_hash': 'b' * 64}])
+        self.assertEqual(len(self.api.requests), 1)  # the 2nd hash would have been the 429
+        self.assertEqual(out[0]['mlab_verdict'], 'known_malicious')  # the last allowed answer is kept
+        self.assertEqual(self.warnings, ['mlab.sh hash quota reached, hash lookups paused for up to an hour'])
+        self.go([{'file_hash': 'x'}, {'file_hash': 'c' * 64}])
+        self.assertEqual(len(self.api.requests), 1)  # still parked on the next search
+
+    def test_low_quota_warns_once(self):
+        self.api.routes['/scan/hash'] = (200, HASH_OK, {'X-RateLimit-Limit': '100', 'X-RateLimit-Remaining': '5'})
+        self.go([{'file_hash': SHA}, {'file_hash': 'b' * 64}])
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.warnings, ['mlab.sh hash quota low: 5 of 100 left'])
+
+    def test_refused_key_warns_once_and_stops_the_run(self):
+        self.api.routes['/scan/hash'] = (401, {'error': 'Unauthorized'})
+        self.api.routes['/scan/ip'] = (401, {'error': 'Unauthorized'})
+        out = self.go([{'file_hash': SHA}, {'file_hash': 'b' * 64}])
+        self.go([{'src': '8.8.8.8'}], 'ip')
+        self.assertEqual(len(self.api.requests), 1)
+        self.assertEqual(self.warnings, [m.KEY_REFUSED])
+        self.assertIn('expired', m.KEY_REFUSED)
+        self.assertIsNone(out[0]['mlab_verdict'])
+        self.api.routes['/scan/hash'] = (200, HASH_OK)  # nothing cached: a fixed key works next search
+        self.cache.key_refused = False
+        r, = self.go([{'file_hash': SHA}])
+        self.assertEqual(r['mlab_verdict'], 'known_malicious')
+
+    def test_domain_reads_the_v2_report(self):
+        self.api.routes['/scan/domain/report'] = (200, {
+            'schema': 'domain-report/2', 'domain': 'example.com', 'status': 'completed',
+            'scan_date': '2026-11-01 10:00:00', 'score': {'value': 72, 'grade': 'C'},
+            'findings': [{'severity': 'high', 'title': 'No DMARC', 'section': 'mail'},
+                         {'severity': 'low', 'title': 'No CAA'}], 'dns': {'big': 'dropped'}})
+        r, = self.go([{'query': 'Example.COM.'}], 'domain')
+        self.assertEqual(self.api.requests[0]['path'], '/scan/domain/report?domain=example.com')
+        self.assertEqual({k: v for k, v in r.items() if k.startswith('mlab_') and v is not None}, {
+            'mlab_type': 'domain', 'mlab_value': 'example.com', 'mlab_status': 'completed',
+            'mlab_scan_date': '2026-11-01 10:00:00', 'mlab_score': 72, 'mlab_grade': 'C',
+            'mlab_findings': ['No DMARC', 'No CAA'], 'mlab_severities': ['high', 'low']})
+
+    def test_domain_and_email_values_that_cannot_be_one_are_not_sent(self):
+        for v in ('localhost', 'two words.com', '.'):
+            r, = self.go([{'query': v}], 'domain')
+            self.assertIsNone(r['mlab_type'], v)
+        r, = self.go([{'src_user': 'a b@x.com'}], 'email')
+        self.assertIsNone(r['mlab_type'])
+        self.assertEqual(self.api.requests, [])
+
+    def test_unscanned_domain_is_not_an_error(self):
+        self.api.routes['/scan/domain/report'] = (400, {'error': 'No scan found for the provided domain.'})
+        r, = self.go([{'query': 'new.example'}], 'domain')
+        self.go([{'query': 'new.example'}], 'domain')
+        self.assertEqual(r['mlab_status'], 'not_scanned')
+        self.assertEqual(self.warnings, [])
+        self.assertEqual(len(self.api.requests), 1)  # cached (for an hour)
+
+    def test_email(self):
+        self.api.routes['/scan/email'] = (200, {
+            'email': 'a@x.com', 'mailbox_type': 'personal', 'is_disposable': True, 'is_free_provider': False,
+            'is_role': False, 'score': {'value': 80, 'band': 'critical', 'reasons': ['x']},
+            'domain_scan': {'spoofability': {'verdict': 'Trivially spoofable', 'summary': '...'}, 'domain_age_days': 3},
+            'findings': [{'severity': 'high', 'title': 'Disposable domain'}]})
+        r, = self.go([{'src_user': 'A@X.com'}, ], 'email')
+        nope, = self.go([{'src_user': 'not-an-address'}], 'email')
+        self.assertEqual(self.api.requests[0]['path'], '/scan/email?email=a%40x.com')
+        self.assertEqual({k: v for k, v in r.items() if k.startswith('mlab_') and v is not None}, {
+            'mlab_type': 'email', 'mlab_value': 'a@x.com', 'mlab_mailbox_type': 'personal',
+            'mlab_is_disposable': 'true', 'mlab_is_free_provider': 'false', 'mlab_is_role': 'false',
+            'mlab_score': 80, 'mlab_band': 'critical', 'mlab_spoofability': 'Trivially spoofable', 'mlab_domain_age_days': 3,
+            'mlab_findings': ['Disposable domain'], 'mlab_severities': ['high']})
+        self.assertIsNone(nope['mlab_type'])
+        self.assertEqual(len(self.api.requests), 1)
+
+    def test_ioc_posts_the_text_and_flattens_groups(self):
+        self.api.routes['/scan/ioc'] = (200, {'status': 'ok', 'ioc_total': 3, 'truncated': False, 'iocs': {
+            'ip': [{'value': '8.8.8.8', 'link': '/ip/8.8.8.8'}],
+            'domain': [{'value': 'evil.com', 'link': '/domain/evil.com'}, {'value': 'bad.org', 'link': 'x'}]}})
+        raw = 'beacon to 8.8.8.8 and evil.com, bad.org'
+        r, = self.go([{'_raw': raw}, ], 'ioc')
+        self.go([{'_raw': raw}], 'ioc')
+        req, = self.api.requests  # the second one comes from the cache
+        self.assertEqual((req['method'], req['path'], req['body']), ('POST', '/scan/ioc', {'text': raw}))
+        self.assertEqual(req['headers']['Content-Type'], 'application/json')
+        self.assertEqual(r['mlab_ioc_total'], 3)
+        self.assertEqual(r['mlab_ioc_types'], ['domain', 'ip'])
+        self.assertEqual(r['mlab_iocs'], ['domain:evil.com', 'domain:bad.org', 'ip:8.8.8.8'])
+        self.assertEqual(r['mlab_truncated'], 'false')
+
 
 class Cache(unittest.TestCase):
     def test_expiry(self):

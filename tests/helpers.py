@@ -10,7 +10,7 @@ sys.path.insert(0, BIN)
 
 
 class FakeAPI:
-    """routes: {path_without_query: (status, json_body)}; records every request."""
+    """routes: {path_without_query: (status, json_body[, headers])}; records every request."""
 
     def __init__(self, routes):
         self.routes, self.requests = routes, []
@@ -22,9 +22,11 @@ class FakeAPI:
                 body = self.rfile.read(n) if n else b''
                 api.requests.append({'method': self.command, 'path': self.path,
                                      'headers': dict(self.headers), 'body': json.loads(body) if body else None})
-                status, out = api.routes.get(self.path.split('?')[0], (404, {'error': 'Not found'}))
+                status, out, *extra = api.routes.get(self.path.split('?')[0], (404, {'error': 'Not found'}))
                 data = json.dumps(out).encode()
                 self.send_response(status)
+                for k, v in (extra[0] if extra else {}).items():
+                    self.send_header(k, v)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()

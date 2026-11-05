@@ -70,6 +70,16 @@ r=$(search '| makeresults | eval src="185.220.101.1" | mlab type=ip')
 if [ "$(jf mlab_tor <<<"$r")" = true ]; then ok "ip: 185.220.101.1 tor=true country=$(jf mlab_country_code <<<"$r")"
 elif grep -q 'quota' <<<"$r"; then skip "ip: mlab.sh IP quota reached (anonymous: 5/day)"
 else ko "ip: ${r:0:300}"; fi
+r=$(search '| makeresults | eval query="example.com" | mlab type=domain')
+st=$(jf mlab_status <<<"$r")
+case "$st" in completed|partial|in_progress|not_scanned) ok "domain: example.com status=$st grade=$(jf mlab_grade <<<"$r")";;
+  *) grep -q 'quota' <<<"$r" && skip "domain: mlab.sh domain quota reached" || ko "domain: ${r:0:300}";; esac
+r=$(search '| makeresults | eval src_user="someone@mailinator.com" | mlab type=email')
+if [ "$(jf mlab_is_disposable <<<"$r")" = true ]; then ok "email: mailinator disposable=true band=$(jf mlab_band <<<"$r")"
+elif grep -q 'quota' <<<"$r"; then skip "email: mlab.sh email quota reached"
+else ko "email: ${r:0:300}"; fi
+r=$(search '| makeresults | eval _raw="beacon to 185.220.101.1 and evil-example.com" | mlab type=ioc')
+[ "$(jf mlab_ioc_total <<<"$r")" -ge 1 ] 2>/dev/null && ok "ioc: $(jf mlab_ioc_total <<<"$r") indicator(s) in the raw text" || ko "ioc: ${r:0:300}"
 
 step "4. Full chain: EICAR seen on web01 -> 'mlab - Known malicious file' -> ir.mlab.sh"
 ev='{"file_hash":"'$EICAR_SHA'","file_path":"/tmp/eicar.com","dest":"web01"}'  # bash 3.2: no nested quotes in $()
